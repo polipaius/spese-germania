@@ -81,6 +81,7 @@
   .route i { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); display: inline-block; opacity: .7; }
 
   .iconbtn {
+    position: relative;
     flex: none; width: 42px; height: 42px; border-radius: 12px;
     border: 1px solid var(--line); background: var(--surface);
     color: var(--ink); display: grid; place-items: center; cursor: pointer;
@@ -88,6 +89,9 @@
   }
   .iconbtn:active { transform: scale(.94); }
   .iconbtn svg { width: 20px; height: 20px; }
+  .netdot { position: absolute; top: 5px; right: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 2px var(--surface); transition: background .2s ease; }
+  .netdot.on { background: var(--good); }
+  .netdot.off { background: #E0A458; }
 
   /* settlement hero */
   .hero {
@@ -290,6 +294,7 @@
         </div>
       </div>
       <button class="iconbtn" id="syncOpen" aria-label="Sincronizza e backup">
+        <span id="netdot" class="netdot" aria-hidden="true"></span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-8-4.9"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 8 4.9"/><path d="M21 3v5h-5"/><path d="M3 21v-5h5"/></svg>
       </button>
     </div>
@@ -398,7 +403,7 @@
     <div class="sheet" id="syncSheet" role="dialog" aria-modal="true">
       <div class="grab"></div>
       <h2>Sincronizza e backup</h2>
-      <p style="font-size:13px;color:var(--muted);margin:-8px 0 16px;">Le spese restano su questo telefono. Per allineare l&rsquo;altro telefono copia il codice qui sotto, mandalo nella chat, l&rsquo;altro lo incolla nel riquadro Ricevi. Le spese si uniscono senza doppioni.</p>
+      <p style="font-size:13px;color:var(--muted);margin:-8px 0 16px;">Le spese si sincronizzano da sole tra i telefoni che aprono questo link (il pallino verde in alto vuol dire connesso). Questo qui sotto serve solo da backup o per passarle a mano se serve.</p>
 
       <div class="syncrow" style="display:block;">
         <div style="display:flex;align-items:center;gap:10px;">
@@ -471,6 +476,7 @@
   };
 
   var KEY = "germania2026_spese_v2";
+  var BACKEND = "https://jsonblob.com/api/jsonBlob/019fdb7e-85d6-76d8-b803-f2c4195ba556";
   var state = { v: 2, expenses: [] };
   var editing = null; // id being edited
   var form = null;    // working form state
@@ -898,7 +904,7 @@
       });
       toast("Spesa aggiunta");
     }
-    save(); renderAll(); closeBackdrop("sheetBack");
+    save(); renderAll(); closeBackdrop("sheetBack"); pushRemote();
   }
 
   function deleteForm() {
@@ -909,7 +915,7 @@
         state.expenses[i].upd = Date.now();
       }
     }
-    save(); renderAll(); closeBackdrop("sheetBack"); toast("Spesa eliminata");
+    save(); renderAll(); closeBackdrop("sheetBack"); pushRemote(); toast("Spesa eliminata");
   }
 
   // ---------- settle (rimborsi) ----------
@@ -972,14 +978,14 @@
       state.expenses.push({ id: uid(), kind: "settle", amount: cents, from: settleForm.from, to: to, date: date, ts: now, upd: now, del: false });
       toast("Pagamento segnato");
     }
-    save(); renderAll(); closeBackdrop("settleBack");
+    save(); renderAll(); closeBackdrop("settleBack"); pushRemote();
   }
   function deleteSettle() {
     if (!editingSettle) return;
     for (var i = 0; i < state.expenses.length; i++) {
       if (state.expenses[i].id === editingSettle) { state.expenses[i].del = true; state.expenses[i].upd = Date.now(); }
     }
-    save(); renderAll(); closeBackdrop("settleBack"); toast("Pagamento eliminato");
+    save(); renderAll(); closeBackdrop("settleBack"); pushRemote(); toast("Pagamento eliminato");
   }
 
   function uid() {
@@ -1029,7 +1035,7 @@
         byId[e.id] = e; updated++;
       }
     });
-    save(); renderAll();
+    if (added || updated) { save(); renderAll(); }
     return { added: added, updated: updated };
   }
   function importFromCode(code) {
@@ -1040,8 +1046,48 @@
       var r = mergeIncoming(list);
       var msg = r.added || r.updated ? ("Aggiunte " + r.added + ", aggiornate " + r.updated) : "Erano gi\u00e0 tutte qui";
       toast(msg);
+      if (r.added || r.updated) pushRemote();
       return true;
     } catch (e) { toast("Codice non valido"); return false; }
+  }
+  // ---------- backend condiviso (jsonblob) ----------
+  var netState = null, pulling = false;
+  function setNet(v) {
+    if (netState === v) return;
+    netState = v;
+    var d = document.getElementById("netdot");
+    if (d) d.className = "netdot " + (v ? "on" : "off");
+  }
+  function fetchRemote() {
+    return fetch(BACKEND, { method: "GET", headers: { "Accept": "application/json" }, cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("GET " + r.status); return r.json(); });
+  }
+  function putRemote(obj) {
+    return fetch(BACKEND, { method: "PUT", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(obj) })
+      .then(function (r) { if (!r.ok) throw new Error("PUT " + r.status); return true; });
+  }
+  function pullRemote() {
+    if (!BACKEND || pulling) return Promise.resolve();
+    pulling = true;
+    return fetchRemote().then(function (obj) {
+      var list = (obj && (obj.expenses || obj.e)) || [];
+      if (Array.isArray(list)) mergeIncoming(list);
+      setNet(true);
+    }).catch(function () { setNet(false); }).then(function () { pulling = false; });
+  }
+  function pushRemote() {
+    if (!BACKEND) return Promise.resolve();
+    return fetchRemote().then(function (obj) {
+      var list = (obj && (obj.expenses || obj.e)) || [];
+      if (Array.isArray(list)) mergeIncoming(list);
+    }).catch(function () {}).then(function () {
+      return putRemote({ v: 2, expenses: state.expenses });
+    }).then(function () { setNet(true); }).catch(function () { setNet(false); });
+  }
+  function startPolling() {
+    setInterval(function () { if (!document.hidden) pullRemote(); }, 15000);
+    window.addEventListener("focus", function () { pullRemote(); });
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) pullRemote(); });
   }
   function copy(text, okMsg) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1085,6 +1131,7 @@
         var obj = JSON.parse(r.result);
         var list = obj.expenses || obj.e || [];
         var res = mergeIncoming(list);
+        if (res.added || res.updated) pushRemote();
         toast("Ripristino, aggiunte " + res.added + ", aggiornate " + res.updated);
       } catch (e) { toast("File non valido"); }
     };
@@ -1096,6 +1143,8 @@
     load();
     checkHashImport();
     renderAll();
+    pullRemote();
+    startPolling();
 
     document.getElementById("addBtn").addEventListener("click", function () { openSheet(null); });
     document.getElementById("fSave").addEventListener("click", saveForm);
