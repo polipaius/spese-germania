@@ -114,6 +114,14 @@
   }
   .anticipo .lbl { font-size: 11px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 6px; }
   .anticipo .val { font-size: 17px; font-weight: 700; margin-top: 3px; letter-spacing: -.01em; }
+  .settle-cta { margin-top: 15px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-family: var(--font); font-size: 14px; font-weight: 700; cursor: pointer; transition: transform .1s ease; }
+  .settle-cta svg { width: 17px; height: 17px; color: var(--good); }
+  .settle-cta:active { transform: scale(.99); }
+  .exp.settle .cat { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+  .exp.settle .cat svg { color: var(--good); }
+  .exp.settle .amt { color: var(--good); }
+  .resta-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 10px; font-size: 13.5px; font-weight: 800; }
+  .resta-row .amt-big { font-size: 15px; }
 
   /* stats strip */
   .strip { display: flex; gap: 8px; margin-bottom: 18px; }
@@ -354,6 +362,37 @@
     </div>
   </div>
 
+  <!-- settle sheet -->
+  <div class="backdrop" id="settleBack">
+    <div class="sheet" id="settleSheet" role="dialog" aria-modal="true">
+      <div class="grab"></div>
+      <h2 id="settleTitle">Segna un pagamento</h2>
+      <p style="font-size:13px;color:var(--muted);margin:-8px 0 18px;">Quando una casa d&agrave; i soldi all&rsquo;altra per chiudere il conto. Il saldo scende di quello che segni, fino ad azzerarsi.</p>
+
+      <div class="field">
+        <label>Quanto</label>
+        <div class="amountbox">
+          <span class="eur">&euro;</span>
+          <input id="sAmount" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Chi ha dato i soldi</label>
+        <div class="seg" id="sFrom"></div>
+        <div class="perhead" id="sDir"></div>
+      </div>
+
+      <div class="field">
+        <label>Quando</label>
+        <input class="in tnum" id="sDate" type="date">
+      </div>
+
+      <button class="savebtn" id="sSave">Salva pagamento</button>
+      <button class="delbtn" id="sDelete" style="display:none;">Elimina questo pagamento</button>
+    </div>
+  </div>
+
   <!-- sync sheet -->
   <div class="backdrop" id="syncBack">
     <div class="sheet" id="syncSheet" role="dialog" aria-modal="true">
@@ -435,6 +474,8 @@
   var state = { v: 2, expenses: [] };
   var editing = null; // id being edited
   var form = null;    // working form state
+  var editingSettle = null;
+  var settleForm = null;
 
   // ---------- storage ----------
   function load() {
@@ -478,9 +519,17 @@
   }
 
   // ---------- compute ----------
-  function activeExpenses() {
+  function isSettle(e) { return e.kind === "settle"; }
+  function activeAll() {
     return state.expenses.filter(function (e) { return !e.del; });
   }
+  function activeExpenses() {
+    return state.expenses.filter(function (e) { return !e.del && !isSettle(e); });
+  }
+  function activeSettlements() {
+    return state.expenses.filter(function (e) { return !e.del && isSettle(e); });
+  }
+  function settleTo(s) { return s.to || (s.from === "giulio" ? "gio" : "giulio"); }
   function compute() {
     var paid = {}, owed = {};
     PEOPLE.forEach(function (p) { paid[p.id] = 0; owed[p.id] = 0; });
@@ -499,7 +548,14 @@
       famNet[p.fam] += net[p.id];
       famPaid[p.fam] += paid[p.id];
     });
-    return { paid: paid, owed: owed, net: net, famNet: famNet, famPaid: famPaid, total: total };
+    var famNetAfter = { giulio: famNet.giulio, gio: famNet.gio };
+    activeSettlements().forEach(function (s) {
+      var to = settleTo(s);
+      if (famNetAfter[s.from] === undefined || famNetAfter[to] === undefined) return;
+      famNetAfter[s.from] += s.amount;
+      famNetAfter[to] -= s.amount;
+    });
+    return { paid: paid, owed: owed, net: net, famNet: famNet, famNetAfter: famNetAfter, famPaid: famPaid, total: total };
   }
 
   // ---------- render ----------
@@ -509,27 +565,35 @@
   function personById(id) { for (var i = 0; i < PEOPLE.length; i++) if (PEOPLE[i].id === id) return PEOPLE[i]; return null; }
   function famColorVar(fam) { return "var(--fam-" + fam + ")"; }
 
+  function settleBtn(label) {
+    return '<button class="settle-cta" id="settleBtn" type="button">' + svg('<path d="M20 6 9 17l-5-5"/>') + '<span>' + label + '</span></button>';
+  }
   function renderHero() {
     var c = compute();
     var el = document.getElementById("hero");
-    var gNet = c.famNet.giulio; // >0 => Casa Giulio creditor => Casa Gio owes Casa Giulio
-    if (activeExpenses().length === 0) {
-      el.innerHTML =
+    var hasExp = activeExpenses().length > 0;
+    var hasSettle = activeSettlements().length > 0;
+    var html;
+    if (!hasExp && !hasSettle) {
+      html =
         '<div class="eyebrow">Chi deve a chi</div>' +
         '<div class="even"><div class="big">Nessuna spesa ancora</div><div class="small">Aggiungi la prima e il conto parte da solo</div></div>';
+      el.innerHTML = html;
       return;
     }
+    var gNet = c.famNetAfter.giulio; // >0 => Casa Giulio creditor => Casa Gio owes
     if (gNet === 0) {
-      el.innerHTML =
+      html =
         '<div class="eyebrow">Chi deve a chi</div>' +
-        '<div class="even"><div class="big">Siete in pari</div><div class="small">Nessuno deve niente a nessuno</div></div>' +
+        '<div class="even"><div class="big">Siete in pari</div><div class="small">' + (hasSettle ? "Conto chiuso, tutto saldato" : "Nessuno deve niente a nessuno") + '</div></div>' +
         antipView(c);
+      el.innerHTML = html;
       return;
     }
     var debtor, creditor, amount;
     if (gNet > 0) { debtor = "gio"; creditor = "giulio"; amount = gNet; }
     else { debtor = "giulio"; creditor = "gio"; amount = -gNet; }
-    el.innerHTML =
+    html =
       '<div class="eyebrow">Chi deve a chi</div>' +
       '<div class="settle-flow">' +
         '<div class="settle-main">' +
@@ -538,7 +602,11 @@
         '</div>' +
         '<div class="settle-arrow">' + svg('<path d="M5 12h14"/><path d="M13 5l7 7-7 7"/>') + '</div>' +
       '</div>' +
-      antipView(c);
+      antipView(c) +
+      settleBtn(hasSettle ? "Segna un altro pagamento" : "Segna il pagamento");
+    el.innerHTML = html;
+    var btn = document.getElementById("settleBtn");
+    if (btn) btn.addEventListener("click", function () { openSettleSheet(null); });
   }
   function antipView(c) {
     return '<div class="heromini">' +
@@ -557,7 +625,7 @@
 
   function renderList() {
     var wrap = document.getElementById("list");
-    var items = activeExpenses().slice().sort(function (a, b) {
+    var items = activeAll().slice().sort(function (a, b) {
       if (a.date !== b.date) return a.date < b.date ? 1 : -1;
       return b.ts - a.ts;
     });
@@ -575,6 +643,19 @@
       if (e.date !== lastDay) {
         lastDay = e.date;
         html += '<div class="daylabel tnum">' + fmtDate(e.date) + '</div>';
+      }
+      if (isSettle(e)) {
+        var sto = settleTo(e);
+        html +=
+          '<button class="exp settle" data-id="' + e.id + '">' +
+            '<span class="cat">' + svg('<path d="M20 6 9 17l-5-5"/>') + '</span>' +
+            '<span class="mid">' +
+              '<span class="desc">Pagamento</span>' +
+              '<span class="meta"><span class="payer-chip" style="color:var(--muted)"><i style="background:' + famColorVar(e.from) + '"></i>' + FAM[e.from].name + ' ha dato a ' + FAM[sto].name + '</span></span>' +
+            '</span>' +
+            '<span class="amt tnum">' + fmt(e.amount) + '</span>' +
+          '</button>';
+        return;
       }
       var cat = catOf(e.cat);
       var payer = personById(e.payer);
@@ -630,12 +711,39 @@
         '<div class="saldo tnum ' + cls + '">' + sign + fmt(net) + '</div>' +
       '</div>';
     }
+    var setl = activeSettlements();
+    var settleHtml = "";
+    if (setl.length) {
+      var rows = setl.slice().sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : a.ts - b.ts); }).map(function (s) {
+        var to = settleTo(s);
+        return '<div class="brow">' +
+          '<div class="who" style="font-weight:600"><i style="background:' + famColorVar(s.from) + '"></i>' + FAM[s.from].name + ' &rarr; ' + FAM[to].name + '</div>' +
+          '<div class="num tnum hide-s"></div>' +
+          '<div class="num tnum"></div>' +
+          '<div class="saldo tnum">' + fmt(s.amount) + '</div>' +
+        '</div>';
+      }).join("");
+      var after = c.famNetAfter.giulio, left, right;
+      if (after === 0) { left = 'Resta da saldare'; right = '<span class="pos">In pari</span>'; }
+      else {
+        var d = after > 0 ? "gio" : "giulio", cr = after > 0 ? "giulio" : "gio";
+        left = '<span class="fam-dot" style="background:' + famColorVar(d) + '"></span>' + FAM[d].name + ' deve a ' + FAM[cr].name;
+        right = '<span class="neg amt-big tnum">' + fmt(Math.abs(after)) + '</span>';
+      }
+      settleHtml =
+        '<div class="breakdown" style="margin-top:12px;">' +
+          '<div class="brow head"><div>Rimborsi</div><div class="num hide-s"></div><div class="num"></div><div class="num">Importo</div></div>' +
+          rows +
+        '</div>' +
+        '<div class="resta-row"><span>' + left + '</span><span>' + right + '</span></div>';
+    }
     el.innerHTML =
       '<div class="breakdown">' +
         '<div class="brow head"><div>Chi</div><div class="num hide-s">Pagato</div><div class="num">Quota</div><div class="num">Saldo</div></div>' +
         row(PEOPLE[0]) + row(PEOPLE[1]) + famRow("giulio") +
         row(PEOPLE[2]) + row(PEOPLE[3]) + famRow("gio") +
       '</div>' +
+      settleHtml +
       '<div style="font-size:11.5px;color:var(--muted);margin:10px 4px 0;line-height:1.5;">Saldo positivo, ha anticipato pi\u00f9 della sua quota e deve ricevere. Saldo negativo, deve ancora dare. Noa conta come quota piena.</div>';
   }
 
@@ -742,6 +850,11 @@
   }
 
   function openSheet(id) {
+    if (id) {
+      var pre = null;
+      for (var j = 0; j < state.expenses.length; j++) if (state.expenses[j].id === id) pre = state.expenses[j];
+      if (pre && isSettle(pre)) { openSettleSheet(id); return; }
+    }
     editing = id || null;
     if (id) {
       var e = null;
@@ -797,6 +910,76 @@
       }
     }
     save(); renderAll(); closeBackdrop("sheetBack"); toast("Spesa eliminata");
+  }
+
+  // ---------- settle (rimborsi) ----------
+  function buildFromChips() {
+    var box = document.getElementById("sFrom");
+    box.innerHTML = ["giulio", "gio"].map(function (f) {
+      var col = famColorVar(f);
+      var on = settleForm.from === f;
+      return '<button type="button" class="chip' + (on ? ' on' : '') + '" data-f="' + f + '" style="--sel:' + col + '">' +
+        '<i style="background:' + col + '"></i>' + FAM[f].name + '</button>';
+    }).join("");
+    Array.prototype.forEach.call(box.children, function (b) {
+      b.addEventListener("click", function () { settleForm.from = b.getAttribute("data-f"); buildFromChips(); });
+    });
+    updateSettleDir();
+  }
+  function updateSettleDir() {
+    var to = settleForm.from === "giulio" ? "gio" : "giulio";
+    document.getElementById("sDir").innerHTML = '<b>' + FAM[settleForm.from].name + '</b> d\u00e0 i soldi a <b>' + FAM[to].name + '</b>';
+  }
+  function openSettleSheet(id) {
+    editingSettle = id || null;
+    if (id) {
+      var e = null;
+      for (var i = 0; i < state.expenses.length; i++) if (state.expenses[i].id === id) e = state.expenses[i];
+      if (!e) return;
+      settleForm = { amount: (e.amount / 100).toString().replace(".", ","), from: e.from, date: e.date };
+      document.getElementById("settleTitle").textContent = "Modifica pagamento";
+      document.getElementById("sDelete").style.display = "block";
+    } else {
+      var c = compute();
+      var gNet = c.famNetAfter.giulio;
+      var from = gNet < 0 ? "giulio" : "gio";
+      var amount = Math.abs(gNet);
+      settleForm = { amount: amount ? (amount / 100).toString().replace(".", ",") : "", from: from, date: todayISO() };
+      document.getElementById("settleTitle").textContent = "Segna un pagamento";
+      document.getElementById("sDelete").style.display = "none";
+    }
+    document.getElementById("sAmount").value = settleForm.amount;
+    document.getElementById("sDate").value = settleForm.date;
+    buildFromChips();
+    openBackdrop("settleBack");
+    if (!id) setTimeout(function () { document.getElementById("sAmount").focus(); }, 320);
+  }
+  function saveSettle() {
+    var cents = parseAmount(document.getElementById("sAmount").value);
+    if (cents <= 0) { toast("Scrivi un importo"); document.getElementById("sAmount").focus(); return; }
+    var date = document.getElementById("sDate").value || todayISO();
+    var to = settleForm.from === "giulio" ? "gio" : "giulio";
+    var now = Date.now();
+    if (editingSettle) {
+      for (var i = 0; i < state.expenses.length; i++) {
+        if (state.expenses[i].id === editingSettle) {
+          var e = state.expenses[i];
+          e.amount = cents; e.from = settleForm.from; e.to = to; e.date = date; e.upd = now;
+        }
+      }
+      toast("Pagamento aggiornato");
+    } else {
+      state.expenses.push({ id: uid(), kind: "settle", amount: cents, from: settleForm.from, to: to, date: date, ts: now, upd: now, del: false });
+      toast("Pagamento segnato");
+    }
+    save(); renderAll(); closeBackdrop("settleBack");
+  }
+  function deleteSettle() {
+    if (!editingSettle) return;
+    for (var i = 0; i < state.expenses.length; i++) {
+      if (state.expenses[i].id === editingSettle) { state.expenses[i].del = true; state.expenses[i].upd = Date.now(); }
+    }
+    save(); renderAll(); closeBackdrop("settleBack"); toast("Pagamento eliminato");
   }
 
   function uid() {
@@ -917,11 +1100,15 @@
     document.getElementById("addBtn").addEventListener("click", function () { openSheet(null); });
     document.getElementById("fSave").addEventListener("click", saveForm);
     document.getElementById("fDelete").addEventListener("click", deleteForm);
+    document.getElementById("sSave").addEventListener("click", saveSettle);
+    document.getElementById("sDelete").addEventListener("click", deleteSettle);
+    document.getElementById("sAmount").addEventListener("focus", function () { this.select(); });
     document.getElementById("fAmount").addEventListener("input", function () { updatePerhead(); });
     document.getElementById("fDesc").addEventListener("input", function () { form.desc = this.value; });
 
     bindPresets();
     bindBackdrop("sheetBack");
+    bindBackdrop("settleBack");
     bindBackdrop("syncBack");
 
     document.getElementById("syncOpen").addEventListener("click", function () {
@@ -951,7 +1138,7 @@
     });
 
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") { closeBackdrop("sheetBack"); closeBackdrop("syncBack"); }
+      if (e.key === "Escape") { closeBackdrop("sheetBack"); closeBackdrop("settleBack"); closeBackdrop("syncBack"); }
     });
   }
 
