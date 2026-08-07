@@ -1101,8 +1101,10 @@
     }).then(function () { setNet(true); }).catch(function () { setNet(false); });
   }
   function startPolling() {
-    setInterval(function () { if (!document.hidden) pullRemote(); }, 15000);
+    setInterval(function () { if (!document.hidden) pullRemote(); }, 12000);
     window.addEventListener("focus", function () { pullRemote(); });
+    window.addEventListener("pageshow", function () { pullRemote(); });
+    window.addEventListener("online", function () { pullRemote(); });
     document.addEventListener("visibilitychange", function () { if (!document.hidden) pullRemote(); });
   }
   function copy(text, okMsg) {
@@ -1177,6 +1179,7 @@
     bindBackdrop("syncBack");
 
     document.getElementById("syncOpen").addEventListener("click", function () {
+      pullRemote();
       document.getElementById("shareCode").value = encodeState();
       openBackdrop("syncBack");
     });
